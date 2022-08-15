@@ -68,7 +68,7 @@ psi1.True <- eval.basis(gridPoints, fbs)[,c(4, 5, 8)]
  
 # Multivariate eigenfunction in the 2nd dimension 
 gridPoints2 <- seq(1, 2, length.out = ngrid)
-psi2.True <- psi22.True <- eval.basis(gridPoints2, fbs)[,c(4, 5, 8)]
+psi2.True <- psi22.True <- eval.basis(gridPoints2, fbs)[,c(4, 9, 8)]
 for(e in 1:M){ 
   set.seed(123+e)
   psi2.True[,e] <- (-1)^sample(1:2, 1, replace = T) * psi22.True[,e]
@@ -82,7 +82,7 @@ if(numRegion==1){
   W <- NewMergedData$W
 } else {
   # US states map 
-  load("49StateAdjMat.RData")
+  load("E:/QQ/two outcome simulation/fpca_mst/mst-fpca/simulation_standardization/final/49StateAdjMat.RData")
 }
 
 # Number of total regions
@@ -176,7 +176,7 @@ Adj.Mat <- data.G[[3]]
 # Save the underlying true values of the generated data
 data.T <- data.G[[4]]
 
-data.G1 <- MST_FPCA_simulation(numRegion=2, # number of regions (scalar, input 1 if you want 158 regions, input 2 if you want 49 regions)
+data.G1 <- MST_FPCA_simulation(numRegion=2, # number of regions (scalar, input 1 if you want 367 regions, input 2 if you want 49 regions)
                               sigma=0.02 # measurement error variance
 )
 
