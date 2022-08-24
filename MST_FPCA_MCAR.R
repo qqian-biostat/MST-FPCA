@@ -12,10 +12,12 @@ MST_FPCA_MCAR <- function(FPCAout, # Output from function MST_FPCA_univariate_de
                            # mu2Est: estimated mean function in second-dimension(vector of length ngrid)
                            # sig1Est: estimated error variance in first-dimension (scalar)
                            # sig2Est: estimated error variance in second-dimension (scalar)
-                           # efun11: estimated univariate eigenfunctions in first dimension (matrix of dimension ngrid*M) 
-                           # efun22: estimated univaraite eigenfunctions in second dimension (matrix of dimension ngrid*M) 
-                           # e.scores11: estimated univariate PC eigenscores in first dimension (matrix of dimension nregion*M)
-                           # e.scores22: estimated univariate PC eigenscores in second dimension (matrix of dimension nregion*M)
+                           # efun11: estimated univariate eigenfunctions in first dimension (matrix of dimension ngrid*M1) 
+                           # efun22: estimated univaraite eigenfunctions in second dimension (matrix of dimension ngrid*M2) 
+                           # e.scores11: estimated univariate PC eigenscores in first dimension (matrix of dimension nregion*M1)
+                           # e.scores22: estimated univariate PC eigenscores in second dimension (matrix of dimension nregion*M2)
+                           # M1: number of eigencomponents chosen by FVE in first diemension (scalar)
+                           # M2: number of eigencomponents chosen by FVE in second diemension (scalar)
                           Y1,  # Generated outcome in first dimension (matrix of dimension nregion * ngrid)
                           Y2,  # Generated outcome in second dimension (matrix of dimension nregion * ngrid)
                           Adj.Mat # Adjacency matrix from the map (0-1 matrix of dimension nregion*nregion)
@@ -28,14 +30,14 @@ MST_FPCA_MCAR <- function(FPCAout, # Output from function MST_FPCA_univariate_de
 ##              M: number of eigen components in each dimension.
 ## Args:        see above
 ## Returns:     list()
-##              psi11Est: estimated multivariate eigenfunctions in first dimension (matrix of dimension ngrid*2*M)
-##              psi22Est: estimated multivariate eigenfunctions in second dimension (matrix of dimension ngrid*2*M)
+##              psi11Est: estimated multivariate eigenfunctions in first dimension (matrix of dimension ngrid*(M1+M2))
+##              psi22Est: estimated multivariate eigenfunctions in second dimension (matrix of dimension ngrid*(M1+M2))
 #############################################################################
   
 # Install missing packages
 list.of.packages <- c("refund", "fda", "mgcv", "MASS", "caTools", "locpol", 
                       "KernSmooth", "fANCOVA", "mgcv", "mvtnorm", "spdep", 
-                      "fields", "R2WinBUGS", "pbugs", "MCMCpack", "mcmcplots")
+                      "fields", "R2WinBUGS", "pbugs")
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
 if(length(new.packages)) install.packages(new.packages) 
   
@@ -57,14 +59,11 @@ library(tidyverse)
 library(fields)
 library(R2WinBUGS)
 library(pbugs)
-library(MCMCpack)
-library(mcmcplots)
   
   
-## Define time points, number of regions, time points, and eigen components in each dimension
+## Define time points, number of regions, and time points
 nregion <- data.T$nregion
 ngrid <- data.T$ngrid
-M <- data.T$M
 gridPoints <- data.T$gridPoints
   
 # Input the generated two dimensional data
@@ -72,6 +71,10 @@ gridPoints <- data.T$gridPoints
 Y1 <- Y1
 # 2nd dimension
 Y2 <- Y2
+
+# Eigencomponents chosen in each dimension
+M1 <- FPCAout$M1
+M2 <- FPCAout$M2
 
 ## WinBUGS model for the 1st MCMC (MCAR part)
 MCARmodel = function(){
@@ -119,7 +122,7 @@ MCARmodel = function(){
   }
   
   # Other priors
-  invTao2 ~ dgamma(2, 0.02)
+  invTao2 ~ dgamma(2, sigma.est)
   tao2 <- 1/invTao2
 } 
 
@@ -129,7 +132,7 @@ MCARmodel = function(){
 mat.Xi <- cbind(FPCAout$e.scores11, FPCAout$e.scores22)
 
 # Number of total eigen components from two dimensions
-noutcome <- M * 2
+noutcome <- M1 + M2 
 
 # Adjacency matrix related elements needed for the built-in `proper.car` function in WinBUGS
 W <- Adj.Mat
@@ -143,31 +146,39 @@ Mv <- CM$M
 D <- rowSums(W) 
 D <- diag(D)
 
+# Eestimated error variance
+sigma.est <- mean(c(FPCAout$sig1Est, FPCAout$sig2Est))
 
 # Data list for MCMC
 MCARdata <- list(mat.Xi = mat.Xi, adj = adj.weights.num$adj, 
                  num = adj.weights.num$num, Cw = Cw, Mv = Mv, 
-                 nregion = nregion, noutcome = noutcome)
+                 nregion = nregion, noutcome = noutcome, sigma.est = sigma.est)
 
 # Define initial values 
+## Define a function to generate strings
+string.gen <- function(noutcome){
+  string <- c()
+  for (k in 1:noutcome){
+    string <- c(string, rnorm(k-1), runif(1,0,2), rep(NA, (noutcome-k)))
+  }
+  return(string)
+}
+
+## Define a function to generate initial values
 MCARinits = function(){
   list(tPsi = matrix(rnorm(nregion * noutcome), nrow = noutcome), 
        nu = runif(1, 0, 1), 
-       roDis = matrix(c(runif(1, 0, 2), rep(NA, 5), rnorm(1), 
-                        runif(1, 0, 2), rep(NA, 4), rnorm(2), 
-                        runif(1, 0, 2), rep(NA, 3), rnorm(3), 
-                        runif(1, 0, 2), rep(NA, 2), rnorm(4), 
-                        runif(1, 0, 2), rep(NA, 1), rnorm(5), 
-                        runif(1, 0, 2)), ncol = noutcome, byrow = T), 
-       invTao2 = rnorm(1,50, 0.0001))
+       roDis = matrix(string.gen(noutcome), ncol = noutcome, byrow = T), 
+       invTao2 = rnorm(1,1/sigma.est, 0.0001))
 }
+MCARinits()
 
 # Paramaters to save
 MCARparam = c("tao2","nu", "roDis")
 
 # Model fit paralelly using WinBUGS
 MCARmcmc = pbugs(data = MCARdata, inits = MCARinits, par = MCARparam, model = MCARmodel, 
-              n.iter = 20000, n.burnin = 5000, 
+              n.iter = 15000, n.burnin = 5000, 
               DIC = F, bugs.seed = 1, debug = FALSE, n.thin = 2, 
               bugs.directory="E:/QQ/Winbug/winbugs14_full_patched/WinBUGS14/")
 
@@ -200,21 +211,21 @@ tao2Est <- sum['tao2']
 z.eg = svd(sigb)
 
 # Estimate multivariate eigenfunctions from their univariate counterparts
-psi11 <- matrix(0, nrow = ngrid, ncol = (2*M))
-psi22 <- matrix(0, nrow = ngrid, ncol = (2*M))
-for(j in 1:(2*M)){
+psi11 <- matrix(0, nrow = ngrid, ncol = (M1+M2))
+psi22 <- matrix(0, nrow = ngrid, ncol = (M1+M2))
+for(j in 1:(M1+M2)){
   # j = 1
-  psi11[,j] = FPCAout$efun11 %*% z.eg$u[1:M,j] 
-  psi22[,j] = FPCAout$efun22 %*% z.eg$u[(M+1):(2*M),j]
+  psi11[,j] = FPCAout$efun11 %*% z.eg$u[1:M1,j] 
+  psi22[,j] = FPCAout$efun22 %*% z.eg$u[(M1+1):(M1+M2),j]
 }
 
 # Normalizing
-for(e in 1:(2*M)){ 
+for(e in 1:(M1+M2)){ 
   normal.factor <- trapz(gridPoints, psi11[, e]^2)
   psi11[, e] <- psi11[, e] / sqrt(2*normal.factor)
 }
 
-for(e in 1:(2*M)){ 
+for(e in 1:(M1+M2)){ 
   normal.factor <- trapz(gridPoints, psi22[, e]^2)
   psi22[, e] <- psi22[, e] / sqrt(2*normal.factor)
 }
@@ -230,7 +241,3 @@ return(out)
 }
 
 
-MCARout <- MST_FPCA_MCAR(FPCAout,
-                        Y1, 
-                        Y2,
-                        Adj.Mat)

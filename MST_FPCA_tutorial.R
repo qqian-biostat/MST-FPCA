@@ -3,14 +3,14 @@
 ## Description: A step-by-step implementation of MST-FPCA and the associated  
 ## procedures described in "Multivariate spatiotemporal functional principal 
 ## component analysis for modeling hospitalization and mortality rates in the
-## U.S. Dialysis Population".  
+## Dialysis Population".  
 #############################################################################
 ## Functions implemented: 
 ## MST_FPCA_simulation.R, 
-## MST_FPCA_univariate_decomposition.R, 
-## MST_FPCA_MCAR.R, 
-## MST_FPCA_CAR.R, 
-## MST_FPCAR_inference.R.
+## MST_FPCA_univariate_decomposition.R (Step 1 of the estimation algorithm), 
+## MST_FPCA_MCAR.R (Step 2-3), 
+## MST_FPCA_CAR.R (Step 4), 
+## MST_FPCAR_inference.R (Step 5).
 #############################################################################
 ## Tutorial Outline:
 ## 1. Simulate two-dimensional outcome data (MST_FPCA_simulation.R)
@@ -22,7 +22,7 @@
 # Install missing packages
 list.of.packages <- c("refund", "fda", "mgcv", "MASS", "caTools", "locpol", 
                       "KernSmooth", "fANCOVA", "mgcv", "mvtnorm", "spdep", 
-                      "fields", "R2WinBUGS", "pbugs", "MCMCpack", "mcmcplots")
+                      "fields", "R2WinBUGS", "pbugs")
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
 if(length(new.packages)) install.packages(new.packages) 
 
@@ -44,15 +44,15 @@ library(tidyverse)
 library(fields)
 library(R2WinBUGS)
 library(pbugs)
-library(MCMCpack)
-library(mcmcplots)
 
 #############################################################################
 # 1. Simulate two-dimensional data
 #############################################################################
 
 # Simulate one dataset from the simulation design described 
-data.G <- MST_FPCA_simulation(numRegion = 2, sigma = .02)  # MST_FPCA_simulation.R
+data.G <- MST_FPCA_simulation(numRegion = 2, sigma = .02)  # MST_FPCA_simulation.R (numRegion = 1 if you want 367 regions, 
+                                                                                  # numRegion = 2 if you want 49 regions,
+                                                                                  # sigma = .02 where 0.02 can be any scalar representing the error variance)
 
 # Data frame used for estimation and inference
 Y1 <- data.G[[1]]
@@ -68,21 +68,34 @@ data.T <- data.G[[4]]
 # 2. Perform MST-FPCA estimation
 #############################################################################
 
-# NOTE: Performing MST-FPCA estimation steps 1 (univariate FPCA decomposition) with 49 regions will take less than one minute.
+# NOTE: Performing MST-FPCA estimation steps 1 (univariate FPCA decomposition) with 49 or 367 regions will take less than one minute.
 
-FPCAout <- MST_FPCA_univariate_decomposition(Y1 = Y1, Y2 = Y2)  # MST_FPCA_univariate_decompostion.R
+FPCAout <- MST_FPCA_univariate_decomposition(Y1 = Y1, Y2 = Y2, FVEvalue = 0.99)  # MST_FPCA_univariate_decompostion.R
+# Note that FVEvalue should be a scalar between 0 to 1, which is to choose the number of eigencomponents in each dimension. 
+# To retain enough information at the initial step of the algorithm, it is better to use a large FVEvalue (close to 1). 
+# In our implementation, we use FVEvalue = 0.99.
 
-# NOTE: Performing MST-FPCA estimation steps 2-3 (1st MCMC and estimate multivariate eigenfunctions) with 49 regions will take less than one minute.
+# Number of eigencomponents chosen in each dimension
+M1 <- FPCAout$M1  # 1st dimension
+M2 <- FPCAout$M2  # 2nd dimension
+
+
+# NOTE: Performing MST-FPCA estimation steps 2-3 (1st MCMC and estimate multivariate eigenfunctions) with 49 regions will take less than one minute (367 regions will take about 6 minutes).
 
 MCARout <- MST_FPCA_MCAR(FPCAout, Y1, Y2, Adj.Mat) # MST_FPCA_MCAR.R
 
-# NOTE: Performing MST-FPCA estimation steps 4 (2nd MCMC to estimate multivariate PC scores) with 49 regions will take less than one minute.
+# NOTE: Performing MST-FPCA estimation steps 4 (2nd MCMC to estimate multivariate PC scores) with 49 regions will take less than one minute (367 regions will take about 4 minutes).
 
-CARout <- MST_FPCA_CAR(FPCAout, MCARout, Adj.Mat) # MST_FPCA_CAR.R
+CARout <- MST_FPCA_CAR(FPCAout, MCARout, L = M1 + M2, Adj.Mat) # MST_FPCA_CAR.R
+# Note that L needs to be an integer between 1 and (M1 + M2), which can be defined by the user. 
+# L is defining the number of eigencomponents included in the final CAR fitting.
+# The estimated spatial variance parameters alphaEst are used as a guidance in choosing L in applications as mentioned in Section 2 of the paper.
+# In our implementation, we choose L = M1 + M2.
 
 #############################################################################
-# 3. Prediction and inference on two outcome trajectories
+# 3. Prediction and inference on two outcome trajectories (Step 5) 
 #############################################################################
+# NOTE: Performing MST-FPCA estimation step 5 with 49 or 367 regions will take less than one minute.
 
 PREDout <- MST_FPCA_inference(FPCAout, MCARout, CARout, Adj.Mat)
 
@@ -93,8 +106,12 @@ PREDout <- MST_FPCA_inference(FPCAout, MCARout, CARout, Adj.Mat)
 ngrid <- data.T$ngrid # 2 year follow up
 gridPoints <- data.T$gridPoints
 
-# Define number of eigen components in each dimension
-M <- data.T$M
+# Number of components chosen from the 1st and 2nd dimension
+M1 <- FPCAout$M1
+M2 <- FPCAout$M2
+
+# Final number of eigen components chosen 
+L <- CARout$L
 
 # True multivariate eigenfunctions
 psi1.True <- data.T$psi1.True # 1st dimension
@@ -102,7 +119,7 @@ psi2.True <- data.T$psi2.True # 2nd dimension
 
 ## Align eigenfunctions
 # Note: the estimated eigenfunctions may flip signs. Here we match the sign of the
-# estimated eigenfunctions to the true eigenfunctions for plotting  
+#      estimated eigenfunctions to the true eigenfunctions for plotting  
 MSDE.eifun <- function(x,y){
   err1 <- trapz(gridPoints, (x-y)^2)
   err2 <- trapz(gridPoints, (x+y)^2)
@@ -110,10 +127,10 @@ MSDE.eifun <- function(x,y){
 }
 
 # Estimated multivariate eigenfunctions
-psi1Est <- MCARout$psi11Est[,1:M]
-psi2Est <- MCARout$psi22Est[,1:M]
+psi1Est <- MCARout$psi11Est
+psi2Est <- MCARout$psi22Est
 
-# Mean squred deviation errors
+# Mean squared deviation errors
 # 1st dimension
 MSDE.psi11 <- MSDE.eifun(psi1Est[,1], psi1.True[,1])
 MSDE.psi12 <- MSDE.eifun(psi1Est[,2], psi1.True[,2]) 
@@ -149,7 +166,7 @@ legend("bottomleft", legend = c("1", "2", "3"), col = c("black", "red", "blue"),
        lty = 1:3, cex = 1)
 title(xlab = "time",ylab=expression(paste(psi^(1),(t))), line=2, cex.lab=1.6)
 
-matplot(gridPoints, psi1Est, "l", ylim = c(-2,2), 
+matplot(gridPoints, psi1Est[,1:M], "l", ylim = c(-2,2), 
         xaxs = "i", main = "(b) Estimated: 1st dimension",cex.main=2,xlab = "", ylab = "", lwd = 2,
         col = c("black", "red", "blue"))
 title(xlab = "time",ylab=expression(paste(widehat(psi)^(1),(t))), line=2, cex.lab=1.6)
@@ -161,7 +178,7 @@ legend("bottomleft", legend = c("1", "2", "3"), col = c("black", "red", "blue"),
        lty = 1:3, cex = 1)
 title(xlab = "time",ylab=expression(paste(psi^(2),(t))), line=2, cex.lab=1.6)
 
-matplot(gridPoints, psi2Est, "l", ylim = c(-2,2), 
+matplot(gridPoints, psi2Est[,1:M], "l", ylim = c(-2,2), 
         xaxs = "i", main = "(d) Estimated: 2nd dimension",cex.main=2,xlab = "", ylab = "", lwd = 2,
         col = c("black", "red", "blue"))
 title(xlab = "time",ylab=expression(paste(widehat(psi)^(2),(t))), line=2, cex.lab=1.6)
@@ -194,6 +211,8 @@ title(xlab = "Time",ylab = "Trajectory", line=2, cex.lab=1.6)
 lines(gridPoints, R.traj1.Est, col = "blue", lwd = 2, lty = 1)
 lines(gridPoints, R.traj1.upper, col = "blue", lwd = 1, lty = 2)
 lines(gridPoints, R.traj1.lower, col = "blue", lwd = 1, lty = 2)
+legend("bottomright", legend = c("True", "Predicted", "95% CIs"), col = c("black", "blue", "blue"), 
+       lty = c(1,1,2), cex = 1)
 
 ylim1 <- min(R.traj2.lower, R.traj2.T, R.traj2.Est)
 ylim2 <- max(R.traj2.upper, R.traj2.T, R.traj2.Est)
@@ -203,4 +222,5 @@ title(xlab = "Time",ylab = "Trajectory", line=2, cex.lab=1.6)
 lines(gridPoints, R.traj2.Est, col = "blue", lwd = 2, lty = 1)
 lines(gridPoints, R.traj2.upper, col = "blue", lwd = 1, lty = 2)
 lines(gridPoints, R.traj2.lower, col = "blue", lwd = 1, lty = 2)
+
 
